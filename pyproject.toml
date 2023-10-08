@@ -3,7 +3,7 @@ requires = ["maturin>=0.14,<0.15"]
 build-backend = "maturin"
 
 [project]
-name = "battlesnake_gym"
+name = "battlesnakegym"
 version = "0.1.0"
 authors = [{name = "Jeff Roach", email = "bitcloud22@gmail.com"}]
 description = "Gym environment simulating BattleSnake game."
@@ -28,4 +28,4 @@ Repository = "https://github.com/bitcloud2/battlesnakegym"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-module-name = "battlesnake_gym.rust"
+module-name = "battlesnakegym.rust"

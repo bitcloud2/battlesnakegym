@@ -12,9 +12,9 @@
 # permissions and limitations under the License.
 
 import numpy as np
-import gym
-from gym import spaces
-from gym.utils import seeding
+import gymnasium as gym
+from gymnasium import spaces
+from gymnasium.utils import seeding
 import json
 import string
 
@@ -672,7 +672,7 @@ class BattlesnakeGym(gym.Env):
             #     print("\033[A")
             return ascii
         elif mode == "human":
-            from gym.envs.classic_control import rendering
+            from gymnasium.envs.classic_control import rendering
             board = self._get_board(state)
             if self.viewer is None:
                 self.viewer = rendering.SimpleImageViewer()

@@ -12,7 +12,7 @@
 # permissions and limitations under the License.
 
 import numpy as np
-import gym
+import gymnasium as gym
 import math
 
 def is_coord_in(coord, array):
