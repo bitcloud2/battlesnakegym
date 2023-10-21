@@ -21,7 +21,7 @@ from pettingzoo import AECEnv
 from pettingzoo.utils import agent_selector, wrappers
 
 
-from .snake import Snakes
+from .snake import Snake
 from .food import Food
 from .game_state_parser import Game_state_parser
 from .rewards import SimpleRewards
@@ -107,8 +107,9 @@ class BattlesnakeGym(AECEnv):
         food_spawn_locations=[],
         verbose=False,
         initial_game_state=None,
-        rewards=SimpleRewards(),
+        rewards_policy=SimpleRewards(),
         render_mode=None,
+        max_iters=1000,
     ):
         self.map_size = map_size
         self.number_of_snakes = number_of_snakes
@@ -129,7 +130,7 @@ class BattlesnakeGym(AECEnv):
         self.viewer = None
         self.state = None
         self.verbose = verbose
-        self.rewards = rewards
+        self.rewards_policy = rewards_policy
 
         self.possible_agents = ["player_" + str(r) for r in range(number_of_snakes)]
         self.agent_name_mapping = dict(
@@ -142,6 +143,7 @@ class BattlesnakeGym(AECEnv):
             agent: self.get_observation_space() for agent in self.possible_agents
         }
         self.render_mode = render_mode
+        self.max_iters = max_iters
 
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
@@ -204,6 +206,74 @@ class BattlesnakeGym(AECEnv):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
 
+    def _initialise_snakes(self):
+        snakes = []
+
+        if len(self.snake_spawn_locations) == 0:
+            starting_positions = get_random_coordinates(
+                self.map_size, self.number_of_snakes
+            )
+        else:
+            error_message = "the number of coordinates in snake_spawn_locations must match the number of snakes"
+            assert (
+                len(self.snake_spawn_locations) == self.number_of_snakes
+            ), error_message
+            starting_positions = self.snake_spawn_locations
+
+        for i in range(self.number_of_snakes):
+            snakes.append(
+                Snake(starting_position=starting_positions[i], map_size=self.map_size)
+            )
+
+        return snakes
+
+    def get_snake_depth_51_map(self, excluded_snakes=[]):
+        """
+        Function to generate a 51 map of the locations of the snakes
+
+        Parameters:
+        ----------
+        excluded_snakes: [Snake]
+            Snakes to not be included in the binary map.
+            Used to check if there are collisions between snakes
+
+        Returns:
+        --------
+        map_image: np.array(map_sizep[0], map_size[1], number_of_snakes)
+            The depth of the map_image corresponds to each snakes
+            For each snake, 2 indicates the head and 1 indicates the body
+             that the snake is present in that location and 0
+            indicates that the snake is not present in that location
+        """
+        map_image = np.zeros(
+            (self.map_size[0], self.map_size[1], len(self.snakes)), dtype=np.uint8
+        )
+        for i, snake in enumerate(self.snakes):
+            if snake not in excluded_snakes:
+                map_image[:, :, i] = snake.get_snake_map(return_type="Binary")
+
+        return map_image
+
+    def get_snake_51_map(self, excluded_snakes=[]):
+        """
+        Function to generate a 51 map of the locations of any snake
+
+        Parameters:
+        ----------
+        excluded_snakes: [Snake]
+            Snakes to not be included in the binary map.
+            Used to check if there are collisions between snakes
+
+        Returns:
+        --------
+        map_image: np.array(map_sizep[0], map_size[1], 1)
+            If any snake is on coordinate i, j, map_image[i, j] will be 1
+        """
+        sum_map = np.sum(
+            self.get_snake_depth_51_map(excluded_snakes=excluded_snakes), 2
+        )
+        return sum_map
+
     # TODO: Probably need to remove map_size
     def reset(self, seed=None, options=None, map_size=None):
         """
@@ -239,17 +309,14 @@ class BattlesnakeGym(AECEnv):
             )
         else:
             self.num_moves = 0
-
-            self.snakes = Snakes(
-                self.map_size, self.number_of_snakes, self.snake_spawn_locations
-            )
+            self.snakes = self._initialise_snakes()
             self.food = Food(self.map_size, self.food_spawn_locations)
-            self.food.spawn_food(self.snakes.get_snake_51_map())
+            self.food.spawn_food(self.get_snake_51_map())
 
         snakes_health = {}
         snake_info = {}
         self.snake_max_len = {}
-        for i, snake in enumerate(self.snakes.get_snakes()):
+        for i, snake in enumerate(self.snakes):
             snakes_health[i] = snake.health
             snake_info[i] = "Did not collide"
             self.snake_max_len[i] = 0
@@ -259,7 +326,6 @@ class BattlesnakeGym(AECEnv):
             "snake_info": snake_info,
             "snake_max_len": self.snake_max_len,
         }
-        return self.observation_space(), {}, dones, info
 
     def _did_snake_collide(self, snake, snakes_to_be_killed):
         """
@@ -422,146 +488,205 @@ class BattlesnakeGym(AECEnv):
             self._was_dead_step(action)
             return
 
+        agent = self.agent_selection
+        agent_id = self.agent_name_mapping[agent]
+        snake = self.snakes[agent_id]
+
+        # the agent which stepped last had its _cumulative_rewards accounted for
+        # (because it was returned by last()), so the _cumulative_rewards for this
+        # agent should start again at 0
+        self._cumulative_rewards[agent] = 0
+
+        # stores action of current agent
+        self.state[self.agent_selection] = action
+
         # setup reward dict
-        reward = {}
+        # reward = {}
         snake_info = {}
 
         # DEBUGING
         json_before_moving = self.get_json()
 
         # Reduce health and move
-        for i, snake in enumerate(self.snakes.get_snakes()):
-            reward[i] = 0
-            if not snake.is_alive():
-                continue
-
-            # Reduce health by one
-            snake.health -= 1
-            if snake.health == 0:
-                snake.kill_snake()
-                reward[i] += self.rewards.get_reward("starved", i, episodes)
-                snake_info[i] = "Starved"
-                continue
-
-            action = actions[i]
+        # Reduce health by one
+        snake.health -= 1
+        if snake.health == 0:
+            snake.kill_snake()
+            self.rewards[agent] += self.rewards_policy.get_reward(
+                "starved", agent_id, episodes
+            )  # TODO: Fix rewards policy
+            snake_info[agent] = "Starved"
+        else:
             is_forbidden = snake.move(action)
             if is_forbidden:
                 snake.kill_snake()
-                reward[i] += self.rewards.get_reward("forbidden_move", i, episodes)
-                snake_info[i] = "Forbidden move"
+                self.rewards[agent] += self.rewards_policy.get_reward(
+                    "forbidden_move", agent_id, episodes
+                )  # TODO: Fix rewards policy
+                snake_info[agent] = "Forbidden move"
 
-        # check for food and collision
-        number_of_food_eaten = 0
-        number_of_snakes_alive = 0
+        # collect reward if it is the last agent to act
+        if self._agent_selector.is_last():
+            # check for food and collision
+            number_of_food_eaten = 0
+            number_of_snakes_alive = 0
 
-        # DEBUGING
-        json_after_moving = self.get_json()
+            # DEBUGING
+            json_after_moving = self.get_json()
 
-        snakes_to_be_killed = []
-        for i, snake in enumerate(self.snakes.get_snakes()):
-            if not snake.is_alive():
-                continue
+            snakes_to_be_killed = []
+            for cur_agent in self.agents:
+                cur_agent_id = self.agent_name_mapping[cur_agent]
+                cur_snake = self.snakes[cur_agent_id]
+                if not cur_snake.is_alive():
+                    continue
 
-            snake_head_location = snake.get_head()
+                snake_head_location = cur_snake.get_head()
 
-            # Check for collisions with the snake
-            should_kill_snake, outcome = self._did_snake_collide(
-                snake, snakes_to_be_killed
-            )
-            if should_kill_snake:
-                snakes_to_be_killed.append(snake)
-            snake_info[i] = outcome
-
-            # Check if snakes ate any food
-            if not should_kill_snake and self.food.does_coord_have_food(
-                snake_head_location
-            ):
-                number_of_food_eaten += 1
-                snake.set_ate_food()
-                self.food.remove_food_from_coord(snake_head_location)
-                reward[i] += self.rewards.get_reward("ate_food", i, episodes)
-
-            # Calculate rewards for collision
-            if outcome == "Snake hit wall":
-                reward[i] += self.rewards.get_reward("hit_wall", i, episodes)
-
-            elif outcome == "Snake was eaten - same tile":
-                reward[i] += self.rewards.get_reward("was_eaten", i, episodes)
-
-            elif outcome == "Snake was eaten - adjacent tile":
-                reward[i] += self.rewards.get_reward("was_eaten", i, episodes)
-
-            elif outcome == "Snake hit body - hit itself":
-                reward[i] += self.rewards.get_reward("hit_self", i, episodes)
-
-            elif outcome == "Snake hit body - hit other":
-                reward[i] += self.rewards.get_reward("hit_other_snake", i, episodes)
-
-            elif outcome == "Other snake hit body":
-                reward[i] += self.rewards.get_reward(
-                    "other_snake_hit_body", i, episodes
+                # Check for collisions with the snake
+                should_kill_snake, outcome = self._did_snake_collide(
+                    cur_snake, snakes_to_be_killed
                 )
+                if should_kill_snake:
+                    snakes_to_be_killed.append(cur_snake)
+                snake_info[cur_agent] = outcome
 
-            elif outcome == "Did not collide":
-                pass
+                # Check if snakes ate any food
+                if not should_kill_snake and self.food.does_coord_have_food(
+                    snake_head_location
+                ):
+                    number_of_food_eaten += 1
+                    cur_snake.set_ate_food()
+                    self.food.remove_food_from_coord(snake_head_location)
+                    self.rewards[cur_agent] += self.rewards_policy.get_reward(
+                        "ate_food", cur_agent_id, episodes
+                    )
 
-            elif outcome == "Ate another snake":
-                reward[i] += self.rewards.get_reward("ate_another_snake", i, episodes)
-        for snake_to_be_killed in snakes_to_be_killed:
-            snake_to_be_killed.kill_snake()
+                # Calculate rewards for collision
+                if outcome == "Snake hit wall":
+                    self.rewards[cur_agent] += self.rewards_policy.get_reward(
+                        "hit_wall", cur_agent_id, episodes
+                    )
 
-        snakes_alive = []
-        for i, snake in enumerate(self.snakes.get_snakes()):
-            snakes_alive.append(snake.is_alive())
-            if snake.is_alive():
-                number_of_snakes_alive += 1
-                reward[i] += self.rewards.get_reward("another_turn", i, episodes)
+                elif outcome == "Snake was eaten - same tile":
+                    self.rewards[cur_agent] += self.rewards_policy.get_reward(
+                        "was_eaten", cur_agent_id, episodes
+                    )
 
-        self.food.end_of_turn(self.snakes.get_snake_51_map())
+                elif outcome == "Snake was eaten - adjacent tile":
+                    self.rewards[cur_agent] += self.rewards_policy.get_reward(
+                        "was_eaten", cur_agent_id, episodes
+                    )
 
-        if self.number_of_snakes > 1 and np.sum(snakes_alive) <= 1:
-            done = True
-            for i, is_snake_alive in enumerate(snakes_alive):
-                if is_snake_alive:
-                    reward[i] += self.rewards.get_reward("won", i, episodes)
-                else:
-                    reward[i] += self.rewards.get_reward("died", i, episodes)
+                elif outcome == "Snake hit body - hit itself":
+                    self.rewards[cur_agent] += self.rewards_policy.get_reward(
+                        "hit_self", cur_agent_id, episodes
+                    )
+
+                elif outcome == "Snake hit body - hit other":
+                    self.rewards[cur_agent] += self.rewards_policy.get_reward(
+                        "hit_other_snake", cur_agent_id, episodes
+                    )
+
+                elif outcome == "Other snake hit body":
+                    self.rewards[cur_agent] += self.rewards_policy.get_reward(
+                        "other_snake_hit_body", cur_agent_id, episodes
+                    )
+
+                elif outcome == "Did not collide":
+                    pass
+
+                elif outcome == "Ate another snake":
+                    self.rewards[cur_agent] += self.rewards_policy.get_reward(
+                        "ate_another_snake", cur_agent_id, episodes
+                    )
+
+            # All Snakes have been resolved. Kill snakes.
+            for snake_to_be_killed in snakes_to_be_killed:
+                snake_to_be_killed.kill_snake()
+
+            # Reward living snakes
+            snakes_alive = []
+            for cur_agent in self.agents:
+                cur_agent_id = self.agent_name_mapping[cur_agent]
+                cur_snake = self.snakes[cur_agent_id]
+                snakes_alive.append(cur_snake.is_alive())
+                if cur_snake.is_alive():
+                    number_of_snakes_alive += 1
+                    self.rewards[cur_agent] += self.rewards_policy.get_reward(
+                        "another_turn", cur_agent_id, episodes
+                    )
+
+            self.food.end_of_turn(self.get_snake_51_map())
+
+            if self.number_of_snakes > 1 and np.sum(snakes_alive) <= 1:
+                done = True
+                for cur_agent in self.agents:
+                    cur_agent_id = self.agent_name_mapping[cur_agent]
+                    cur_snake = self.snakes[cur_agent_id]
+                    if cur_snake.is_alive():
+                        self.rewards[cur_agent] += self.rewards_policy.get_reward(
+                            "won", cur_agent_id, episodes
+                        )
+                    else:
+                        self.rewards[cur_agent] += self.rewards_policy.get_reward(
+                            "died", cur_agent_id, episodes
+                        )
+            else:
+                done = False
+
+            snake_alive_dict = {
+                i: a for i, a in enumerate(np.logical_not(snakes_alive).tolist())
+            }
+            self.num_moves += 1
+
+            snakes_health = {}
+            for i, snake in enumerate(self.snakes.get_snakes()):
+                snakes_health[i] = snake.health
+                if snake.is_alive():
+                    self.snake_max_len[i] += 1
+                if i not in snake_info:
+                    snake_info[i] = "Dead"
+
+            sum_map = self.snakes.get_snake_51_map()
+            if np.max(sum_map) > 5 or 2 in sum_map:
+                print("snake info {}".format(snake_info))
+                # print("actions {}".format(actions))
+                print("before moving json {}".format(json_before_moving))
+                print("after moving json {}".format(json_after_moving))
+                print("final json {}".format(self.get_json()))
+                raise
+
+            # Original Pettingzoo reward code below ##################################
+            # rewards for all agents are placed in the .rewards dictionary
+            # self.rewards[self.agents[0]], self.rewards[self.agents[1]] = REWARD_MAP[
+            #     (self.state[self.agents[0]], self.state[self.agents[1]])
+            # ]
+
+            self.num_moves += 1
+            # The truncations dictionary must be updated for all players.
+            self.truncations = {
+                agent: self.num_moves >= self.max_iters for agent in self.agents
+            }
+
+            # observe the current state
+            for i in self.agents:
+                self.observations[i] = self.state[
+                    self.agents[1 - self.agent_name_mapping[i]]
+                ]
         else:
-            done = False
+            # necessary so that observe() returns a reasonable observation at all times.
+            self.state[self.agents[1 - self.agent_name_mapping[agent]]] = None
+            # no rewards are allocated until both players give an action
+            self._clear_rewards()
 
-        snake_alive_dict = {
-            i: a for i, a in enumerate(np.logical_not(snakes_alive).tolist())
-        }
-        self.num_moves += 1
+        # selects the next agent.
+        self.agent_selection = self._agent_selector.next()
+        # Adds .rewards to ._cumulative_rewards
+        self._accumulate_rewards()
 
-        snakes_health = {}
-        for i, snake in enumerate(self.snakes.get_snakes()):
-            snakes_health[i] = snake.health
-            if snake.is_alive():
-                self.snake_max_len[i] += 1
-            if i not in snake_info:
-                snake_info[i] = "Dead"
-
-        sum_map = self.snakes.get_snake_51_map()
-        if np.max(sum_map) > 5 or 2 in sum_map:
-            print("snake info {}".format(snake_info))
-            print("actions {}".format(actions))
-            print("before moving json {}".format(json_before_moving))
-            print("after moving json {}".format(json_after_moving))
-            print("final json {}".format(self.get_json()))
-            raise
-
-        return (
-            self._get_observation(),
-            reward,
-            snake_alive_dict,
-            {
-                "current_turn": self.num_moves,
-                "snake_health": snakes_health,
-                "snake_info": snake_info,
-                "snake_max_len": self.snake_max_len,
-            },
-        )
+        if self.render_mode == "human":
+            self.render()
 
     def _get_observation(self):
         """
