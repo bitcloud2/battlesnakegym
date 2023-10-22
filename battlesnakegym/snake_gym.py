@@ -120,12 +120,12 @@ class BattlesnakeGym(AECEnv):
         self.number_of_snakes = number_of_snakes
         self.map_size = map_size
 
-        self.action_space = MultiAgentActionSpace(
-            [spaces.Discrete(4) for _ in range(number_of_snakes)]
-        )
+        # self.action_space = MultiAgentActionSpace(
+        #     [spaces.Discrete(4) for _ in range(number_of_snakes)]
+        # )
 
         self.observation_type = observation_type
-        self.observation_space = self.get_observation_space()
+        # self.observation_space = self.get_observation_space()
 
         self.viewer = None
         self.state = None
@@ -140,14 +140,27 @@ class BattlesnakeGym(AECEnv):
             agent: spaces.Discrete(4) for agent in self.possible_agents
         }
         self._observation_spaces = {
-            agent: self.get_observation_space() for agent in self.possible_agents
+            # TODO: This was dynamic in the old version, but fails with RLlib.
+            agent: spaces.Box(
+                low=-1,  # TODO: This was -1. Fix this!!!
+                high=5,  # TODO: This was 5. Fix this!!!
+                shape=(self.map_size[0], self.map_size[1], self.number_of_snakes + 1),
+                dtype=np.uint8,
+            )
+            for agent in self.possible_agents
         }
         self.render_mode = render_mode
         self.max_iters = max_iters
 
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
-        return self.observation_space
+        # TODO: This is dynamic in the old version, but it fails with RLlib.
+        return spaces.Box(
+            low=-1,  # TODO: This was -1. Fix this!!!
+            high=5,
+            shape=(self.map_size[0], self.map_size[1], self.number_of_snakes + 1),
+            dtype=np.uint8,
+        )
 
     @functools.lru_cache(maxsize=None)
     def action_space(self, agent):
@@ -299,9 +312,9 @@ class BattlesnakeGym(AECEnv):
         self._agent_selector = agent_selector(self.agents)
         self.agent_selection = self._agent_selector.next()
 
-        if options["map_size"] is not None:
+        if map_size is not None:
             self.observation_space = self.get_observation_space()
-            self.map_size = options["map_size"]
+            self.map_size = map_size
 
         if self.initial_game_state is not None:
             self.snakes, self.food, self.num_moves = self.initialise_game_state(
@@ -320,12 +333,11 @@ class BattlesnakeGym(AECEnv):
             snakes_health[i] = snake.health
             snake_info[i] = "Did not collide"
             self.snake_max_len[i] = 0
-        self.infos = {
-            "current_turn": self.num_moves,
-            "snake_health": snakes_health,
-            "snake_info": snake_info,
-            "snake_max_len": self.snake_max_len,
-        }
+
+        self.infos["current_turn"] = self.num_moves
+        self.infos["snake_health"] = snakes_health
+        self.infos["snake_info"] = snake_info
+        self.infos["snake_max_len"] = self.snake_max_len
 
     def _did_snake_collide(self, snake, snakes_to_be_killed):
         """
@@ -373,7 +385,7 @@ class BattlesnakeGym(AECEnv):
         #  | |< S1
         #   ^
         #   S2
-        for other_snake in self.snakes.get_snakes():
+        for other_snake in self.snakes:
             if other_snake == snake:
                 continue
             if other_snake.is_alive():
@@ -394,7 +406,7 @@ class BattlesnakeGym(AECEnv):
         #    S1     S1
         #   |  |> <|  |
         #
-        for other_snake in self.snakes.get_snakes():
+        for other_snake in self.snakes:
             if other_snake == snake:
                 continue
             # Check if snake swapped places with the other_snake.
@@ -427,7 +439,7 @@ class BattlesnakeGym(AECEnv):
 
         # 3.2) Check if snake ran into another snake's body
         outcome = "Snake hit body - hit other"
-        snake_binary_map = self.snakes.get_snake_51_map(
+        snake_binary_map = self.get_snake_51_map(
             excluded_snakes=[snake] + snakes_eaten_this_turn
         )
         if snake_binary_map[snake_head_location[0], snake_head_location[1]] == 1:
@@ -436,7 +448,7 @@ class BattlesnakeGym(AECEnv):
             return True, outcome
 
         # 4) Check if another snake ran into this snake
-        for other_snake in self.snakes.get_snakes():
+        for other_snake in self.snakes:
             if other_snake == snake:
                 continue
             if other_snake.is_alive():
@@ -641,14 +653,14 @@ class BattlesnakeGym(AECEnv):
             self.num_moves += 1
 
             snakes_health = {}
-            for i, snake in enumerate(self.snakes.get_snakes()):
+            for i, snake in enumerate(self.snakes):
                 snakes_health[i] = snake.health
                 if snake.is_alive():
                     self.snake_max_len[i] += 1
                 if i not in snake_info:
                     snake_info[i] = "Dead"
 
-            sum_map = self.snakes.get_snake_51_map()
+            sum_map = self.get_snake_51_map()
             if np.max(sum_map) > 5 or 2 in sum_map:
                 print("snake info {}".format(snake_info))
                 # print("actions {}".format(actions))
@@ -713,6 +725,42 @@ class BattlesnakeGym(AECEnv):
             bordered_state[b:-b, b:-b, :] = state
             return bordered_state
 
+    def get_snake_depth_numbered_map(self, excluded_snakes=[]):
+        """
+        Function to generate a numbered map of the locations of any snake
+        1 will be the head, 2, 3 etc will be the body
+
+        Parameters:
+        ----------
+        excluded_snakes: [Snake]
+            Snakes to not be included in the binary map.
+            Used to check if there are collisions between snakes
+
+        Returns:
+        --------
+        map_image: np.array(map_sizep[0], map_size[1], number_of_snakes)
+            The depth of the map_image corresponds to each snakes
+            For each snake, 1 indicates the head and 2, 3, 4 etc indicates
+             the body that the snake is present in that location and 0
+            indicates that the snake is not present in that location
+        """
+        map_image = np.zeros(
+            (self.map_size[0], self.map_size[1], len(self.snakes)), dtype=np.uint8
+        )
+        for i, snake in enumerate(self.snakes):
+            if snake not in excluded_snakes:
+                map_image[:, :, i] = snake.get_snake_map(return_type="Numbered")
+        return map_image
+
+    def get_snake_colours(self):
+        """
+        The colours of each snake are provided
+        """
+        snake_colours = []
+        for snake in self.snakes:
+            snake_colours.append(snake.colour)
+        return snake_colours
+
     def _get_state(self):
         """'
         Helper function to generate the state of the game.
@@ -726,7 +774,7 @@ class BattlesnakeGym(AECEnv):
         FOOD_INDEX = 0
         SNAKE_INDEXES = FOOD_INDEX + np.array(range(1, self.number_of_snakes + 1))
 
-        depth_of_state = 1 + self.snakes.number_of_snakes
+        depth_of_state = 1 + self.number_of_snakes
         state = np.zeros(
             (self.map_size[0], self.map_size[1], depth_of_state), dtype=np.uint8
         )
@@ -736,9 +784,9 @@ class BattlesnakeGym(AECEnv):
 
         # Include the positions of the snakes
         if "51s" in self.observation_type:
-            state[:, :, SNAKE_INDEXES] = self.snakes.get_snake_depth_51_map()
+            state[:, :, SNAKE_INDEXES] = self.get_snake_depth_51_map()
         else:
-            state[:, :, SNAKE_INDEXES] = self.snakes.get_snake_depth_numbered_map()
+            state[:, :, SNAKE_INDEXES] = self.get_snake_depth_numbered_map()
         return state
 
     def _get_board(self, state):
@@ -820,7 +868,7 @@ class BattlesnakeGym(AECEnv):
 
         # Get snakes
         snake_dict_list = []
-        for i, snakes in enumerate(self.snakes.snakes):
+        for i, snakes in enumerate(self.snakes):
             snake_location = []
             for coord in snakes.locations[::-1]:
                 snake_location.append({"x": coord[1], "y": coord[0]})
@@ -874,7 +922,7 @@ class BattlesnakeGym(AECEnv):
                     ascii_array[i + 1, j + 1] = " @"
 
         # Populate snakes
-        for idx, snake in enumerate(self.snakes.get_snakes()):
+        for idx, snake in enumerate(self.snakes):
             snake_character = string.ascii_lowercase[idx]
             for snake_idx, location in enumerate(snake.locations):
                 snake_idx = len(snake.locations) - snake_idx - 1
@@ -904,7 +952,7 @@ class BattlesnakeGym(AECEnv):
         ascii_string += "Turn = {}".format(self.num_moves) + "\n"
 
         # Print snake health
-        for idx, snake in enumerate(self.snakes.get_snakes()):
+        for idx, snake in enumerate(self.snakes):
             ascii_string += (
                 "{} = {}".format(string.ascii_lowercase[idx], snake.health) + "\n"
             )
@@ -948,10 +996,14 @@ class BattlesnakeGym(AECEnv):
             #     print("\033[A")
             return ascii
         elif self.render_mode == "human":
-            from gymnasium.envs.classic_control import rendering
+            return self._get_board(state)
+            # Gymnasium doesn't have rendering.
+            # The code below doesn't work with Gymnasium.
 
-            board = self._get_board(state)
-            if self.viewer is None:
-                self.viewer = rendering.SimpleImageViewer()
-            self.viewer.imshow(board)
-            return self.viewer.isopen
+            # from gymnasium.envs.classic_control import rendering
+
+            # board = self._get_board(state)
+            # if self.viewer is None:
+            #     self.viewer = rendering.SimpleImageViewer()
+            # self.viewer.imshow(board)
+            # return self.viewer.isopen
