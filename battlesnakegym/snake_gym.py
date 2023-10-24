@@ -685,9 +685,10 @@ class BattlesnakeGym(AECEnv):
             }
 
             # observe the current state
-            self.observations = {
-                agent: self._get_observation() for agent in self.agents
-            }
+            # self.observations = {
+            #     agent: self._get_observation() for agent in self.agents
+            # }
+            self.observations = self._get_observation()
         else:
             # necessary so that observe() returns a reasonable observation at all times.
             self.state[self.agents[1 - self.agent_name_mapping[agent]]] = None
