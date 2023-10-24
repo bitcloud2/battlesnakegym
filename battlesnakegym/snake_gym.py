@@ -142,7 +142,7 @@ class BattlesnakeGym(AECEnv):
         self._observation_spaces = {
             # TODO: This was dynamic in the old version, but fails with RLlib.
             agent: spaces.Box(
-                low=-1,  # TODO: This was -1. Fix this!!!
+                low=0,  # TODO: This was -1. Fix this!!!
                 high=5,  # TODO: This was 5. Fix this!!!
                 shape=(self.map_size[0], self.map_size[1], self.number_of_snakes + 1),
                 dtype=np.uint8,
@@ -156,7 +156,7 @@ class BattlesnakeGym(AECEnv):
     def observation_space(self, agent):
         # TODO: This is dynamic in the old version, but it fails with RLlib.
         return spaces.Box(
-            low=-1,  # TODO: This was -1. Fix this!!!
+            low=0,  # TODO: This was -1. Fix this!!!
             high=5,
             shape=(self.map_size[0], self.map_size[1], self.number_of_snakes + 1),
             dtype=np.uint8,
@@ -173,7 +173,7 @@ class BattlesnakeGym(AECEnv):
         """
         if "flat" in self.observation_type:
             observation_space = spaces.Box(
-                low=-1,
+                low=0,
                 high=5,
                 shape=(self.map_size[0], self.map_size[1], self.number_of_snakes + 1),
                 dtype=np.uint8,
@@ -306,7 +306,6 @@ class BattlesnakeGym(AECEnv):
         self.truncations = {agent: False for agent in self.agents}
         self.infos = {agent: {} for agent in self.agents}
         self.state = {agent: None for agent in self.agents}
-        self.observations = {agent: None for agent in self.agents}
         self.num_moves = 0
         # agent_selector for easy cycling through agent list
         self._agent_selector = agent_selector(self.agents)
@@ -333,6 +332,10 @@ class BattlesnakeGym(AECEnv):
             snakes_health[i] = snake.health
             snake_info[i] = "Did not collide"
             self.snake_max_len[i] = 0
+
+        # Tested removing the dict portion and appears to work! Leaving in for now.
+        # self.observations = {agent: self._get_observation() for agent in self.agents}
+        self.observations = self._get_observation()
 
         self.infos["current_turn"] = self.num_moves
         self.infos["snake_health"] = snakes_health
@@ -682,10 +685,9 @@ class BattlesnakeGym(AECEnv):
             }
 
             # observe the current state
-            for i in self.agents:
-                self.observations[i] = self.state[
-                    self.agents[1 - self.agent_name_mapping[i]]
-                ]
+            self.observations = {
+                agent: self._get_observation() for agent in self.agents
+            }
         else:
             # necessary so that observe() returns a reasonable observation at all times.
             self.state[self.agents[1 - self.agent_name_mapping[agent]]] = None
@@ -966,7 +968,8 @@ class BattlesnakeGym(AECEnv):
         at any time after reset() is called.
         """
         # observation of one agent is the previous state of the other
-        return np.array(self.observations[agent])
+        # return np.array(self.observations[agent])
+        return self.observations
 
     def close(self):
         """
